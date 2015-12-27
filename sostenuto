@@ -1,0 +1,145 @@
+#!/usr/bin/env python
+
+import collections, datetime, re, sys
+
+__version__ = "0.1.0"
+
+def main(sustains):
+    for line in lines(sys.stdin):
+        if not any([s.sustain(line) for s in sustains]):
+            sys.stdout.write(line)
+
+def lines(file):
+    while True:
+        line = file.readline()
+        if not line:
+            return
+        yield line
+
+class Sustainer(object):
+    def __init__(self, pattern):
+        self._pattern = re.compile(pattern)
+
+    def sustain(self, string):
+        match = re.search(self._pattern, string)
+        if match:
+            return self._remove(match)
+
+class Counter(Sustainer):
+    def __init__(self, pattern, count):
+        super(Counter, self).__init__(pattern)
+        self._max_count = count
+        self._count = count - 1
+
+    def _remove(self, match):
+        self._count += 1
+        if self._count == self._max_count:
+            self._count = 0
+            return False
+        return True
+
+class Throttle(Sustainer):
+    def __init__(self, pattern, seconds):
+        super(Throttle, self).__init__(pattern)
+        self._seconds = datetime.timedelta(seconds=seconds)
+        self._last_time = (datetime.datetime.utcnow() - self._seconds -
+            datetime.timedelta(seconds=1))
+
+    def _remove(self, match):
+        now = datetime.datetime.utcnow()
+        if self._last_time + self._seconds < now:
+            self._last_time = now
+            return False
+        return True
+
+class Once(Sustainer):
+    def __init__(self, pattern):
+        super(Once, self).__init__(pattern)
+        self._executed = False
+
+    def _remove(self, match):
+        if not self._executed:
+            self._executed = True
+            return False
+        return True
+
+class Expression(Sustainer):
+    def __init__(self, pattern, expression):
+        super(Expression, self).__init__(pattern)
+        self._last_printed_match = None
+        self._predicate = lambda a, b: eval(expression)
+
+    def _remove(self, match):
+        if not self._last_printed_match:
+            self._last_printed_match = match
+            return False
+        a, b = self._last_printed_match, match
+        should_remove = self._predicate(self._last_printed_match, match)
+        if not should_remove:
+            self._last_printed_match = match
+        return should_remove
+
+def parse_args(args):
+    sustainers = []
+    cls = None
+    cls_args = []
+    for arg in args:
+        if cls:
+            if cls is Counter:
+                arg_len = len(cls_args)
+                if arg_len == 0:
+                    cls_args.append(arg)
+                elif arg_len == 1:
+                    cls_args.append(int(arg))
+                    sustainers.append(cls(*cls_args))
+                    cls = None
+                    cls_args = []
+            elif cls is Throttle:
+                arg_len = len(cls_args)
+                if arg_len == 0:
+                    cls_args.append(arg)
+                elif arg_len == 1:
+                    cls_args.append(float(arg))
+                    sustainers.append(cls(*cls_args))
+                    cls = None
+                    cls_args = []
+            elif cls is Once:
+                sustainers.append(cls(arg))
+                cls = None
+                cls_args = []
+            elif cls is Expression:
+                arg_len = len(cls_args)
+                if arg_len == 0:
+                    cls_args.append(arg)
+                elif arg_len == 1:
+                    cls_args.append(arg)
+                    sustainers.append(cls(*cls_args))
+                    cls = None
+                    cls_args = []
+        elif arg in ('c', 'count', 'counter'):
+            cls = Counter
+        elif arg in ('t', 'throttle'):
+            cls = Throttle
+        elif arg in ('o', 'once'):
+            cls = Once
+        elif arg in ('e', 'expr', 'expression'):
+            cls = Expression
+        else:
+            print_usage()
+            sys.exit(1)
+    return sustainers
+
+def print_usage():
+    sys.stderr.write("""Usage: %s (counter <pattern> <repetitions> |
+    throttle <pattern> <cooldown> |
+    once <pattern> |
+    expression <pattern> <predicate>)*
+
+Sustain similar lines while letting everything else through unaltered.
+""" % sys.argv[0])
+
+if __name__ == '__main__':
+    try:
+        main(parse_args(sys.argv[1:]))
+    except KeyboardInterrupt:
+        pass
